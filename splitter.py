@@ -47,8 +47,81 @@ def main():
 
     plot(smoothed_rms_times, smoothed_rms, "Smoothed Normalised RMS",
          "Time (s)", "Smoothed Normalised RMS")
+    plt.xticks(np.arange(0, 2500, 300)) # TODO: Remove when not using test mix.mp3 data
     plt.scatter(peak_ts, smoothed_rms[peaks], color="r")
     plt.savefig("smooth_rms.png")
+
+    # for peak in peaks:
+    #     calibration_radius = 2.5*60*sr # 2m30s
+    #     calibration_center = (peak+window_size) * 512 + 2048/2
+    #     calibration_start = max(0, round(calibration_center - calibration_radius))
+    #     calibration_end = min(len(y), round(calibration_center + calibration_radius))
+    #     calibration_slice = y[calibration_start:calibration_end]
+    #     slices.append(calibration_slice)
+
+    slices = []
+    prev_yidx = None
+    for peak in peaks:
+        y_idx = round((peak+window_size) * 512 + 2048/2)
+        if prev_yidx is None:
+            slices.append(y[0:y_idx])
+        else:
+            slices.append(y[prev_yidx:y_idx])
+        prev_yidx = y_idx+1
+
+    for i in range(3):
+        print(i)
+        new_slices = mergeMostSimilarSlices(slices, sr)
+        if len(new_slices) == len(slices):
+            break # No slices merged
+        slices = new_slices
+
+    print(len(slices))
+    temp = 0
+    for s in slices:
+        x = len(s)/sr
+        temp += x
+        print(f"{round(temp//60)}m{round(temp%60)}s")
+
+
+def extractFeatures(audio_slice, sr):
+    # Extracting MFCCs
+    mfccs = librosa.feature.mfcc(y=audio_slice, sr=sr, n_mfcc=13)
+    mfccs_mean = np.mean(mfccs.T, axis=0)
+
+    # Extracting Chroma features
+    chroma = librosa.feature.chroma_stft(y=audio_slice, sr=sr)
+    chroma_mean = np.mean(chroma.T, axis=0)
+
+    # # Extracting Spectral Contrast features
+    # spectral_contrast = librosa.feature.spectral_contrast(y=audio_slice, sr=sr)
+    # spectral_contrast_mean = np.mean(spectral_contrast.T, axis=0)
+
+    # Combine the features into a single feature vector
+    combined_features = np.hstack((mfccs_mean, chroma_mean))
+    return combined_features
+
+def mergeMostSimilarSlices(slices, sr):
+    # TODO: Cache feature data, and only update for merged slices!
+    features = [extractFeatures(slice, sr) for slice in slices]
+
+    # Find:
+    min_distance = float('inf')
+    min_index = None
+    for i in range(len(features) - 1):
+        distance = np.linalg.norm(features[i] - features[i + 1])
+        if distance < min_distance:
+            min_distance = distance
+            min_index = i
+
+    # Merge:
+    if min_index is not None:
+        merged_slice = np.concatenate((slices[min_index], slices[min_index + 1]))
+        new_slices = slices[:min_index] + [merged_slice] + slices[min_index + 2:]
+        return new_slices
+    else:
+        logging.info("No similar slices?")
+        return slices
 
 # See: https://stackoverflow.com/a/43335059
 def rollingMax(a, window):
