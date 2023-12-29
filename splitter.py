@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 import subprocess
 import time
 
@@ -34,6 +35,9 @@ elif args.very_verbose:
     logger.setLevel(logging.DEBUG)
 
 audio_filename = "mix.mp3"
+if os.path.exists(audio_filename):
+    print("Deleting mix.mp3...")
+    os.remove(audio_filename)
 
 logger.info("Downloading " + args.url + "...")
 download_start = time.time()
@@ -84,7 +88,8 @@ def main():
 
     slices = getSlices(peaks, window_size)
     slices = mergeSlices(slices)
-    logSliceTimes(slices)
+    if args.make_plots:
+        plotSliceTimes(slices, smoothed_rms_times, smoothed_rms)
 
     if args.no_export: quit()
     exportSlices(slices)
@@ -170,14 +175,18 @@ def mergeSlices(slices):
             current_slice = np.concatenate((current_slice, slices[i]))
             current_feature = extractFeatures(current_slice) # Recalculate features for the merged slice
         else:
-            if similarity > similarity_threshold:
-                logger.debug("Move on, because not similar")
+            if i == (len(slices)-1):
+                # The next slice is the last one,
+                # so merge it to avoid having a very short slice at the end
+                current_slice = np.concatenate((current_slice, slices[i]))
             else:
-                logger.debug("Move on, because over max_duration")
-            # If not similar or duration exceeded, add to merged slices and move to next
-            merged_slices.append(current_slice)
-            current_slice = slices[i]
-            current_feature = features[i]
+                if similarity > similarity_threshold:
+                    logger.debug("Move on, because not similar")
+                else:
+                    logger.debug("Move on, because over max_duration")
+                merged_slices.append(current_slice)
+                current_slice = slices[i]
+                current_feature = features[i]
 
     merged_slices.append(current_slice)  # Add the last slice
     return merged_slices
@@ -198,12 +207,19 @@ def getSlices(peaks, window_size):
 
     return slices
 
-def logSliceTimes(slices):
+def plotSliceTimes(slices, rms_times, rms_values):
+    plot(rms_times, rms_values, "Smoothed Normalised RMS",
+            "Time (s)", "Smoothed Normalised RMS")
+    plt.xticks(np.arange(0, np.max(rms_times), 300))
+
     cumulative_time = 0
     for s in slices:
         slice_time = len(s)/sr
         cumulative_time += slice_time
-        logger.debug(f"{round(cumulative_time//60)}m{round(cumulative_time%60)}s")
+        plt.axvline(x=cumulative_time, color='r', linestyle='--', zorder=10)
+        # logger.debug(f"{round(cumulative_time//60)}m{round(cumulative_time%60)}s")
+
+    plt.savefig("exported.png")
 
 # See: https://stackoverflow.com/a/43335059
 def rollingMax(a, window):
@@ -241,7 +257,7 @@ def approxDerivative(a):
     return np.sort(peak_idxs_filtered)[1:] # First index is always near-zero
 
 def plot(xs, ys, title, xlabel, ylabel):
-    plt.figure(figsize=(10, 4))
+    plt.figure(figsize=(24, 8))
     plt.plot(xs, ys, color="b")
     plt.title(title)
     plt.xlabel(xlabel)
