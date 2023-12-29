@@ -8,34 +8,34 @@ from pydub import AudioSegment
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import find_peaks
-from scipy.spatial.distance import cosine
-
-logging.basicConfig(format="[%(levelname)s] %(asctime)s %(funcName)s: %(message)s")
-logger = logging.getLogger("splitter")
-logger.setLevel(logging.DEBUG)
+from scipy.spatial.distance import euclidean
 
 parser = argparse.ArgumentParser(prog="Splitter", description="Split your DJ mixes!")
-parser.add_argument("--no-plots", action="store_true")
+parser.add_argument("-v", "--verbose", action="store_true")
+parser.add_argument("-vv", "--very-verbose", action="store_true")
+parser.add_argument("--make-plots", action="store_true")
 parser.add_argument("--no-slices", action="store_true")
 parser.add_argument("--no-export", action="store_true")
 args = parser.parse_args()
 
-def init(audio_filename):
-    logger.info("Loading " + audio_filename + "...")
-    load_start = time.time()
+logging.basicConfig(format="[%(levelname)s] %(asctime)s %(funcName)s: %(message)s")
+logger = logging.getLogger("splitter")
+if args.verbose:
+    logger.setLevel(logging.INFO)
+elif args.very_verbose:
+    logger.setLevel(logging.DEBUG)
 
-    y, sr = librosa.load(audio_filename, sr=22050)
+audio_filename = "mix.mp3"
 
-    load_end = time.time()
-    logger.info("Loaded " + audio_filename + " in " + str(round(load_end-load_start, 1)) + "s")
-    logger.info("Num. Samples: " + str(len(y)))
-    logger.info("Sampling Rate: " + str(sr))
-
-    return y, sr
+logger.info("Loading " + audio_filename + "...")
+load_start = time.time()
+y, sr = librosa.load(audio_filename, sr=22050)
+load_end = time.time()
+logger.info("Loaded " + audio_filename + " in " + str(round(load_end-load_start, 1)) + "s")
+logger.info("Num. Samples: " + str(len(y)))
+logger.info("Sampling Rate: " + str(sr))
 
 def main():
-    y, sr = init("mix.mp3")
-
     logger.info("Computing RMS...")
     rms = librosa.feature.rms(y=y)
     norm_rms = rms / np.max(rms)
@@ -43,9 +43,10 @@ def main():
     rms_frames = range(len(norm_rms))
     rms_times = librosa.frames_to_time(rms_frames, sr=sr)
 
-    if not args.no_plots:
+    if args.make_plots:
         plot(rms_times, norm_rms, "Normalised RMS",
             "Time (s)", "Normalised RMS")
+        plt.xticks(np.arange(np.min(rms_times), np.max(rms_times), 300))
         plt.savefig("normalised_rms.png")
 
     logger.info("Smoothing RMS...")
@@ -53,25 +54,28 @@ def main():
     smoothed_rms = rollingMax(norm_rms, window_size)
     smoothed_rms_times = rms_times[(window_size-1):(window_size+len(smoothed_rms))]
 
+    if args.no_slices: quit()
+
     logger.info("Finding peaks...")
-    peaks = find_peaks(smoothed_rms*(-1), distance=2500, prominence=0.1)[0]
+    peaks = approxDerivative(smoothed_rms)
     peak_ts = [((point+window_size) * 512 + 2048/2) / sr for point in peaks]
 
-    if not args.no_plots:
+    if args.make_plots:
         plot(smoothed_rms_times, smoothed_rms, "Smoothed Normalised RMS",
-            "Time (s)", "Smoothed Normalised RMS")
-        plt.xticks(np.arange(0, 2500, 300)) # TODO: Remove when not using test mix.mp3 data
-        plt.scatter(peak_ts, smoothed_rms[peaks], color="r")
+             "Time (s)", "Smoothed Normalised RMS")
+        for pt in peak_ts:
+            plt.axvline(x=pt, color='r', linestyle='--', zorder=10)
+        plt.xticks(np.arange(np.min(smoothed_rms_times), np.max(smoothed_rms_times), 300))
         plt.savefig("smooth_rms.png")
 
-    if args.no_slices: quit()
-    slices = getSlices(y, peaks, window_size)
-    slices = mergeSlices(slices, sr)
+    slices = getSlices(peaks, window_size)
+    slices = mergeSlices(slices)
+    logSliceTimes(slices)
 
     if args.no_export: quit()
-    exportSlices(slices, sr)
+    exportSlices(slices)
 
-def exportSlices(slices, sr):
+def exportSlices(slices):
     logger.info("Exporting slices...")
 
     original_mix = AudioSegment.from_mp3("mix.mp3")
@@ -87,7 +91,7 @@ def exportSlices(slices, sr):
 
         cumulative_ms = slice_end_ms
 
-def extractFeatures(audio_slice, sr):
+def extractFeatures(audio_slice):
     # Extracting MFCCs
     mfccs = librosa.feature.mfcc(y=audio_slice, sr=sr, n_mfcc=13)
     mfccs_mean = np.mean(mfccs.T, axis=0)
@@ -101,41 +105,47 @@ def extractFeatures(audio_slice, sr):
     rms_mean = np.mean(rms.T, axis=0)
 
     # Combine the features into a single feature vector
-    combined_features = np.hstack((mfccs_mean, chroma_mean, rms_mean))
+    combined_features = np.hstack((mfccs_mean, chroma_mean))
     return combined_features
 
-def mergeSlices(slices, sr):
+def mergeSlices(slices):
     logger.info("Extracting features...")
-    features = [extractFeatures(slice, sr) for slice in slices]
+    features = [extractFeatures(slice) for slice in slices]
 
+    sims = []
+    for idx in range(len(features)-1):
+        sims.append(euclidean(features[idx], features[idx+1]))
+    similarity_threshold = np.mean(sims)-0.5*np.std(sims)
+    logger.debug("Threshold for similarity: " + str(round(similarity_threshold, 2)))
+
+    min_duration = 4.5*60 # 4m30s
+    max_duration = 10*60 # 10m
+
+    logger.info("Merging slices...")
     merged_slices = []
     current_slice = slices[0]
     current_feature = features[0]
-
-    min_duration = 4*60 # 4min
-    max_duration = 12*60 # 12min
-    similarity_threshold = 0.95
-
-    logger.info("Merging slices...")
     for i in range(1, len(slices)):
-        logger.debug("Processing slice " + str(i) + "/" + str(len(slices)) + "...")
+        logger.debug("Processing slice " + str(i) + "/" + str(len(slices)-1) + "...")
 
-        similarity = 1 - cosine(current_feature, features[i])
-        logger.debug(similarity)
+        # TODO: Only compare to last ~1-2min instead of whole slice?
+        # Euclidean similarity seems more precise here (Cosine is always above 0.9!)
+        similarity = euclidean(current_feature, features[i])
+        logger.debug("Similarity: " + str(round(similarity, 3)))
         current_duration = librosa.get_duration(y=current_slice, sr=sr)
         duration_if_merged = current_duration + librosa.get_duration(y=slices[i], sr=sr)
         if current_duration < min_duration:
             logger.debug("Merge, because under min_duration")
             # Merge if under min_duration
             current_slice = np.concatenate((current_slice, slices[i]))
-            current_feature = extractFeatures(current_slice, sr) # Recalculate features for merged slice
-        elif duration_if_merged <= max_duration and similarity > similarity_threshold:
+            current_feature = extractFeatures(current_slice) # Recalculate features for merged slice
+        elif duration_if_merged <= max_duration and similarity < similarity_threshold:
             logger.debug("Merge, because similar")
             # Merge if similar and within duration limit
             current_slice = np.concatenate((current_slice, slices[i]))
-            current_feature = extractFeatures(current_slice,sr) # Recalculate features for the merged slice
+            current_feature = extractFeatures(current_slice) # Recalculate features for the merged slice
         else:
-            if similarity < similarity_threshold:
+            if similarity > similarity_threshold:
                 logger.debug("Move on, because not similar")
             else:
                 logger.debug("Move on, because over max_duration")
@@ -147,7 +157,7 @@ def mergeSlices(slices, sr):
     merged_slices.append(current_slice)  # Add the last slice
     return merged_slices
 
-def getSlices(y, peaks, window_size):
+def getSlices(peaks, window_size):
     logger.info("Generating slices...")
     slices = []
 
@@ -163,16 +173,7 @@ def getSlices(y, peaks, window_size):
 
     return slices
 
-def calibratePeaks(peaks, window_size):
-    for peak in peaks:
-        calibration_radius = 2.5*60*sr # 2m30s
-        calibration_center = (peak+window_size) * 512 + 2048/2
-        calibration_start = max(0, round(calibration_center - calibration_radius))
-        calibration_end = min(len(y), round(calibration_center + calibration_radius))
-        calibration_slice = y[calibration_start:calibration_end]
-        # TODO...
-
-def logSliceTimes(slices, sr):
+def logSliceTimes(slices):
     cumulative_time = 0
     for s in slices:
         slice_time = len(s)/sr
@@ -198,6 +199,21 @@ def rollingMax(a, window):
       i = (i + 1) % window
       j += 1
   return np.array(list(eachValue()))
+
+def approxDerivative(a):
+    window_size = 300 # Should probably be related to the smoothing window?
+    derivative = np.array([a[i + window_size] - a[i] for i in range(len(a) - window_size)])
+
+    mix_duration = librosa.get_duration(y=y, sr=sr) # Seconds
+    num_peaks = int(mix_duration / (2*60)) # One peak per 2min
+    derivative_second = len(derivative) // mix_duration
+
+    peak_idxs, _ = find_peaks(derivative*(-1), distance=60*derivative_second, prominence=np.std(a))
+    logger.debug("Filtering " + str(len(peak_idxs)) + " peaks to " + str(num_peaks) + "...")
+    peak_idxs_sorted_by_derivative = peak_idxs[np.argsort(derivative[peak_idxs])]
+    peak_idxs_filtered = peak_idxs_sorted_by_derivative[:num_peaks]
+
+    return np.sort(peak_idxs_filtered)[1:] # First index is always near-zero
 
 def plot(xs, ys, title, xlabel, ylabel):
     plt.figure(figsize=(10, 4))
