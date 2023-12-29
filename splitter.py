@@ -1,5 +1,6 @@
-import time
+import argparse
 import logging
+import time
 
 import librosa
 from pydub import AudioSegment
@@ -11,7 +12,13 @@ from scipy.spatial.distance import cosine
 
 logging.basicConfig(format="[%(levelname)s] %(asctime)s %(funcName)s: %(message)s")
 logger = logging.getLogger("splitter")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
+
+parser = argparse.ArgumentParser(prog="Splitter", description="Split your DJ mixes!")
+parser.add_argument("--no-plots", action="store_true")
+parser.add_argument("--no-slices", action="store_true")
+parser.add_argument("--no-export", action="store_true")
+args = parser.parse_args()
 
 def init(audio_filename):
     logger.info("Loading " + audio_filename + "...")
@@ -36,9 +43,10 @@ def main():
     rms_frames = range(len(norm_rms))
     rms_times = librosa.frames_to_time(rms_frames, sr=sr)
 
-    plot(rms_times, norm_rms, "Normalised RMS",
-         "Time (s)", "Normalised RMS")
-    plt.savefig("normalised_rms.png")
+    if not args.no_plots:
+        plot(rms_times, norm_rms, "Normalised RMS",
+            "Time (s)", "Normalised RMS")
+        plt.savefig("normalised_rms.png")
 
     logger.info("Smoothing RMS...")
     window_size = 200
@@ -49,14 +57,18 @@ def main():
     peaks = find_peaks(smoothed_rms*(-1), distance=2500, prominence=0.1)[0]
     peak_ts = [((point+window_size) * 512 + 2048/2) / sr for point in peaks]
 
-    plot(smoothed_rms_times, smoothed_rms, "Smoothed Normalised RMS",
-         "Time (s)", "Smoothed Normalised RMS")
-    plt.xticks(np.arange(0, 2500, 300)) # TODO: Remove when not using test mix.mp3 data
-    plt.scatter(peak_ts, smoothed_rms[peaks], color="r")
-    plt.savefig("smooth_rms.png")
+    if not args.no_plots:
+        plot(smoothed_rms_times, smoothed_rms, "Smoothed Normalised RMS",
+            "Time (s)", "Smoothed Normalised RMS")
+        plt.xticks(np.arange(0, 2500, 300)) # TODO: Remove when not using test mix.mp3 data
+        plt.scatter(peak_ts, smoothed_rms[peaks], color="r")
+        plt.savefig("smooth_rms.png")
 
+    if args.no_slices: quit()
     slices = getSlices(y, peaks, window_size)
     slices = mergeSlices(slices, sr)
+
+    if args.no_export: quit()
     exportSlices(slices, sr)
 
 def exportSlices(slices, sr):
