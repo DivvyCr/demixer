@@ -2,7 +2,7 @@ import argparse
 import logging
 import os
 import subprocess
-import time
+import sys
 
 import librosa
 from pydub import AudioSegment
@@ -39,21 +39,21 @@ if os.path.exists(audio_filename):
     print("Deleting mix.mp3...")
     os.remove(audio_filename)
 
-logger.info("Downloading " + args.url + "...")
-download_start = time.time()
-subprocess.Popen(["yt-dlp", args.url, "-x", "--audio-format", "mp3", "-o", audio_filename]).wait()
-download_end = time.time()
-logger.info("Downloaded " + args.url + " in " + str(round(download_end-download_start, 1)) + "s")
+print("Downloading " + args.url + " ...")
+ytdlp_args = ["yt-dlp", args.url,
+              "--extract-audio", "--audio-format", "mp3",
+              "--output", audio_filename,
+              ("--quiet" if logger.level == 0 else "--no-quiet")]
+subprocess.Popen(ytdlp_args).wait()
 
-logger.info("Loading " + audio_filename + "...")
-load_start = time.time()
+print("Loading " + audio_filename + "...")
 y, sr = librosa.load(audio_filename, sr=22050)
-load_end = time.time()
-logger.info("Loaded " + audio_filename + " in " + str(round(load_end-load_start, 1)) + "s")
 logger.info("Num. Samples: " + str(len(y)))
 logger.info("Sampling Rate: " + str(sr))
 
 def main():
+    print("Processing audio...")
+
     logger.info("Computing RMS...")
     rms = librosa.feature.rms(y=y)
     norm_rms = rms / np.max(rms)
@@ -86,6 +86,7 @@ def main():
         plt.xticks(np.arange(0, np.max(smoothed_rms_times), 300))
         plt.savefig("smooth_rms.png")
 
+
     slices = getSlices(peaks, window_size)
     slices = mergeSlices(slices)
     if args.make_plots:
@@ -95,16 +96,20 @@ def main():
     exportSlices(slices)
 
 def exportSlices(slices):
-    logger.info("Exporting slices...")
+    print("Input metadata for export:")
+    mix_title =  input(" Mix Title  > ")
+    mix_artist = input(" Mix Artist > ")
+    mix_year =   input(" Mix Year   > ")
 
-    mix_title = input("Mix Title: ")
-    mix_artist = input("Mix Artist: ")
-    mix_year = input("Mix Year: ")
-
+    print("Loading " + audio_filename + " for export...")
     original_mix = AudioSegment.from_mp3("mix.mp3")
+
+    print("Exporting slices...")
     cumulative_ms = 0
     for i, s in enumerate(slices):
-        logger.debug("Exporting " + str(i+1) + "/" + str(len(slices)) + "...")
+        if logger.level > logging.DEBUG or logger.level == 0:
+            updateProgressBar(i, len(slices))
+
         filename = "Part-" + str(i+1) + ".mp3"
 
         slice_start_ms = cumulative_ms
@@ -118,8 +123,11 @@ def exportSlices(slices):
                           "GENRE": "DJ Mix",
                           "TRACK": str(i+1),
                           "COMMENT": "NOTE: This is YouTube audio and part of a larger mix."})
-
         cumulative_ms = slice_end_ms
+
+    if logger.level > logging.DEBUG or logger.level == 0:
+        updateProgressBar(len(slices), len(slices))
+        sys.stdout.write('\n') # Newline after progress bar
 
 def extractFeatures(audio_slice):
     # Extracting MFCCs
@@ -151,15 +159,17 @@ def mergeSlices(slices):
     min_duration = 4.5*60 # 4m30s
     max_duration = 10*60 # 10m
 
-    logger.info("Merging slices...")
     merged_slices = []
     current_slice = slices[0]
     current_feature = features[0]
+
+    print("Merging slices...")
     for i in range(1, len(slices)):
-        logger.debug("Processing slice " + str(i) + "/" + str(len(slices)-1) + "...")
+        if logger.level > logging.DEBUG or logger.level == 0:
+            updateProgressBar(i, len(slices))
 
         # TODO: Only compare to last ~1-2min instead of whole slice?
-        # Euclidean similarity seems more precise here (Cosine is always above 0.9!)
+
         similarity = euclidean(current_feature, features[i])
         logger.debug("Similarity: " + str(round(similarity, 3)))
         current_duration = librosa.get_duration(y=current_slice, sr=sr)
@@ -187,6 +197,11 @@ def mergeSlices(slices):
                 merged_slices.append(current_slice)
                 current_slice = slices[i]
                 current_feature = features[i]
+
+
+    if logger.level > logging.DEBUG or logger.level == 0:
+        updateProgressBar(len(slices), len(slices))
+        sys.stdout.write('\n') # Newline after progress bar
 
     merged_slices.append(current_slice)  # Add the last slice
     return merged_slices
@@ -256,6 +271,12 @@ def approxDerivative(a):
 
     return np.sort(peak_idxs_filtered)[1:] # First index is always near-zero
 
+def updateProgressBar(progress, total):
+    percent = 100 * (progress / float(total))
+    bar = '#' * int(percent / 5) + ' ' * (20 - int(percent / 5))
+    sys.stdout.write("\r[{}] {:.0f}%".format(bar, percent))
+    sys.stdout.flush()
+
 def plot(xs, ys, title, xlabel, ylabel):
     plt.figure(figsize=(24, 8))
     plt.plot(xs, ys, color="b")
@@ -264,4 +285,3 @@ def plot(xs, ys, title, xlabel, ylabel):
     plt.ylabel(ylabel)
 
 main()
-logger.info("Finished!")
