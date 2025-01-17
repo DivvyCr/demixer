@@ -31,15 +31,21 @@ logging.basicConfig(format="[%(levelname)s] %(asctime)s %(funcName)s: %(message)
 logger = logging.getLogger("splitter")
 if args.verbose:
     logger.setLevel(logging.INFO)
-elif args.very_verbose:
+if args.very_verbose:
     logger.setLevel(logging.DEBUG)
 
+print("Input metadata for export:")
+mix_title =  input(" Mix Title  > ")
+mix_artist = input(" Mix Artist > ")
+mix_year =   input(" Mix Year   > ")
+
 audio_filename = "mix.mp3"
+
 if os.path.exists(audio_filename):
-    print("Deleting mix.mp3...")
+    print("Deleting " + audio_filename + "...")
     os.remove(audio_filename)
 
-print("Downloading " + args.url + " ...")
+print("Downloading " + args.url + " into " + audio_filename + "...")
 ytdlp_args = ["yt-dlp", args.url,
               "--extract-audio", "--audio-format", "mp3",
               "--output", audio_filename,
@@ -96,11 +102,6 @@ def main():
     exportSlices(slices)
 
 def exportSlices(slices):
-    print("Input metadata for export:")
-    mix_title =  input(" Mix Title  > ")
-    mix_artist = input(" Mix Artist > ")
-    mix_year =   input(" Mix Year   > ")
-
     print("Loading " + audio_filename + " for export...")
     original_mix = AudioSegment.from_mp3("mix.mp3")
 
@@ -178,12 +179,14 @@ def mergeSlices(slices):
             logger.debug("Merge, because under min_duration")
             # Merge if under min_duration
             current_slice = np.concatenate((current_slice, slices[i]))
-            current_feature = extractFeatures(current_slice) # Recalculate features for merged slice
+            current_feature = features[i] # Use right-most slice's features for next comparison
+            # current_feature = extractFeatures(current_slice) # Recalculate features for merged slice
         elif duration_if_merged <= max_duration and similarity < similarity_threshold:
             logger.debug("Merge, because similar")
             # Merge if similar and within duration limit
             current_slice = np.concatenate((current_slice, slices[i]))
-            current_feature = extractFeatures(current_slice) # Recalculate features for the merged slice
+            current_feature = features[i] # Use right-most slice's features for next comparison
+            # current_feature = extractFeatures(current_slice) # Recalculate features for merged slice
         else:
             if i == (len(slices)-1):
                 # The next slice is the last one,
@@ -264,7 +267,8 @@ def approxDerivative(a):
     num_peaks = int(mix_duration / (2*60)) # One peak per 2min
     derivative_second = len(derivative) // mix_duration
 
-    peak_idxs, _ = find_peaks(derivative*(-1), distance=60*derivative_second, prominence=np.std(a))
+    peak_idxs, _ = find_peaks(derivative*(-1), distance=30*derivative_second, prominence=0.8*np.std(a))
+    peak_idxs += window_size // 2 # Use middle of the window for peaks, instead of the start
     logger.debug("Filtering " + str(len(peak_idxs)) + " peaks to " + str(num_peaks) + "...")
     peak_idxs_sorted_by_derivative = peak_idxs[np.argsort(derivative[peak_idxs])]
     peak_idxs_filtered = peak_idxs_sorted_by_derivative[:num_peaks]
